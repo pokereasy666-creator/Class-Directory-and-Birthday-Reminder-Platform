@@ -1,0 +1,94 @@
+{
+  "name": "class-directory-server",
+  "version": "1.0.0",
+  "description": "班级通讯录与生日提醒平台 - 后端",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "dev": "nest start --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,test,prisma}/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"prisma/**/*.ts\"",
+    "test": "jest",
+    "test:cov": "jest --coverage",
+    "test:e2e": "jest --config ./test/jest-e2e.json --runInBand",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "seed": "prisma db seed",
+    "seed:demo": "ts-node prisma/seed.ts --demo"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.0",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.0",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.1.0",
+    "@nestjs/schedule": "^6.1.3",
+    "@nestjs/serve-static": "^5.0.5",
+    "@nestjs/swagger": "^11.4.7",
+    "@nestjs/throttler": "^6.7.1",
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "cron": "^4.4.0",
+    "dayjs": "^1.11.23",
+    "exceljs": "^4.4.0",
+    "lunar-javascript": "^1.7.7",
+    "nodemailer": "^7.0.13",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "dotenv": "^17.4.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^11.1.0",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^22.20.5",
+    "@types/nodemailer": "^7.0.0",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^6.0.0",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.0",
+    "globals": "^16.0.0",
+    "jest": "^30.5.2",
+    "prettier": "^3.6.0",
+    "prisma": "^6.19.3",
+    "supertest": "^7.3.1",
+    "ts-jest": "^29.4.15",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.ts$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.ts"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}

@@ -1,0 +1,119 @@
+// 班级通讯录与生日提醒平台 - 数据模型
+// 文档：https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING // 注册后待管理员审核
+  ACTIVE
+  DISABLED
+}
+
+enum CalendarType {
+  SOLAR // 公历
+  LUNAR // 农历
+}
+
+enum NotificationType {
+  BIRTHDAY_TODAY
+  BIRTHDAY_UPCOMING
+  ANNOUNCEMENT
+}
+
+model User {
+  id                 Int        @id @default(autoincrement())
+  username           String     @unique @db.VarChar(32)
+  passwordHash       String     @map("password_hash") @db.VarChar(100)
+  role               Role       @default(STUDENT)
+  status             UserStatus @default(PENDING)
+  // 每次禁用、改密、重置密码时自增，使已签发的 JWT 立即失效
+  tokenVersion       Int        @default(0) @map("token_version")
+  mustChangePassword Boolean    @default(false) @map("must_change_password")
+
+  name      String  @db.VarChar(20)
+  studentNo String? @unique @map("student_no") @db.VarChar(20)
+  phone     String? @db.VarChar(11)
+  qq        String? @db.VarChar(12)
+  email     String? @db.VarChar(100)
+  dorm      String? @db.VarChar(50)
+  remark    String? @db.VarChar(200)
+  avatar    String? @db.VarChar(255)
+
+  groupId Int?        @map("group_id")
+  group   ClassGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  // 生日按 年/月/日 分开存储：农历日期（如二月三十）无法用 DATE 表示，且年份允许为空以隐藏年龄
+  birthdayCalendar CalendarType? @map("birthday_calendar")
+  birthYear        Int?          @map("birth_year") @db.SmallInt
+  birthMonth       Int?          @map("birth_month") @db.TinyInt
+  birthDay         Int?          @map("birth_day") @db.TinyInt
+  birthIsLeapMonth Boolean       @default(false) @map("birth_is_leap_month")
+  emailNotify      Boolean       @default(false) @map("email_notify")
+
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  announcements Announcement[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([name])
+  @@map("user")
+}
+
+model ClassGroup {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique @db.VarChar(30)
+  sort      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users User[]
+
+  @@map("class_group")
+}
+
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  title     String   @db.VarChar(100)
+  content   String   @db.Text
+  pinned    Boolean  @default(false)
+  authorId  Int?     @map("author_id")
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([pinned, createdAt])
+  @@map("announcement")
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int              @map("user_id")
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String           @db.VarChar(100)
+  content   String           @db.VarChar(500)
+  // 关联对象：生日提醒为寿星用户 id，公告通知为公告 id
+  relatedId Int              @default(0) @map("related_id")
+  // 生日提醒对应的生日当天日期（YYYY-MM-DD），用于去重；公告通知为空字符串
+  refDate   String           @default("") @map("ref_date") @db.VarChar(10)
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  @@unique([userId, type, relatedId, refDate])
+  @@index([userId, readAt])
+  @@map("notification")
+}
