@@ -2,6 +2,7 @@
 declare module 'lunar-javascript' {
   export class Solar {
     static fromYmd(year: number, month: number, day: number): Solar;
+    static fromJulianDay(julianDay: number): Solar;
     getYear(): number;
     getMonth(): number;
     getDay(): number;
@@ -22,11 +23,17 @@ declare module 'lunar-javascript' {
     static fromYear(lunarYear: number): LunarYear;
     /** 当年闰几月，无闰月返回 0 */
     getLeapMonth(): number;
+    /** 当年的所有月份（含闰月），按时间顺序 */
+    getMonthsInYear(): LunarMonth[];
   }
 
   export class LunarMonth {
     /** 月份不存在（如当年无此闰月）时返回 null */
     static fromYm(lunarYear: number, lunarMonth: number): LunarMonth | null;
+    getYear(): number;
+    /** 闰月为负数 */
+    getMonth(): number;
     getDayCount(): number;
+    getFirstJulianDay(): number;
   }
 }

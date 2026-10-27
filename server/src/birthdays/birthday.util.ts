@@ -12,8 +12,9 @@
  *   4. 农历小月只有 29 天：三十出生的人在小月年份按二十九过；
  *   5. 农历闰月：当年有同一个闰月则在闰月过，否则在正常月份过。
  */
-import { Lunar, LunarMonth, LunarYear, Solar } from 'lunar-javascript';
+import { LunarYear, Solar } from 'lunar-javascript';
 import {
+  addDays,
   DateStr,
   daysInSolarMonth,
   diffDays,
@@ -94,13 +95,50 @@ export function solarOccurrenceInYear(b: Birthday, year: number): DateStr {
   return formatDate(year, b.month, b.day);
 }
 
+interface LunarYearTable {
+  /** 闰几月，无闰月为 0 */
+  leapMonth: number;
+  /** 键为月份（闰月为负数），值为该月初一的公历日期和天数 */
+  months: Map<number, { firstDay: DateStr; days: number }>;
+}
+
+/*
+ * 性能：lunar-javascript 换算一个农历日期要先推算整年的节气和朔日（单次约 0.5ms），
+ * 而它只缓存最近使用的一个年份。nextOccurrence 对每个人依次尝试 Y-1、Y、Y+1 三个年份，
+ * 缓存每次都失效，全班几十人一次查询就要上百毫秒。
+ * 这里按农历年缓存"每月初一的公历日期 + 当月天数"，任意农历日期都可以用
+ * "初一 + (日 - 1) 天"直接得到，同一年份只推算一次。缓存规模为用到的年份数 × 13 个月。
+ */
+const lunarYearTables = new Map<number, LunarYearTable>();
+
+export function lunarYearTable(lunarYear: number): LunarYearTable {
+  let table = lunarYearTables.get(lunarYear);
+  if (!table) {
+    const year = LunarYear.fromYear(lunarYear);
+    table = { leapMonth: year.getLeapMonth(), months: new Map() };
+    for (const m of year.getMonthsInYear()) {
+      table.months.set(m.getMonth(), {
+        firstDay: Solar.fromJulianDay(m.getFirstJulianDay()).toYmd(),
+        days: m.getDayCount(),
+      });
+    }
+    lunarYearTables.set(lunarYear, table);
+  }
+  return table;
+}
+
+/** 农历日期转公历；日期超过当月天数时返回 null */
+function lunarToSolar(lunarYear: number, month: number, day: number): DateStr | null {
+  const m = lunarYearTable(lunarYear).months.get(month);
+  return m && day <= m.days ? addDays(m.firstDay, day - 1) : null;
+}
+
 /** 农历生日在农历 lunarYear 年对应的公历日期 */
 export function lunarOccurrenceInLunarYear(b: Birthday, lunarYear: number): DateStr {
-  const useLeap = !!b.isLeapMonth && LunarYear.fromYear(lunarYear).getLeapMonth() === b.month;
-  const month = useLeap ? -b.month : b.month;
-  const dayCount = LunarMonth.fromYm(lunarYear, month)!.getDayCount();
-  const day = Math.min(b.day, dayCount);
-  return Lunar.fromYmd(lunarYear, month, day).getSolar().toYmd();
+  const table = lunarYearTable(lunarYear);
+  const month = b.isLeapMonth && table.leapMonth === b.month ? -b.month : b.month;
+  const { days } = table.months.get(month)!;
+  return lunarToSolar(lunarYear, month, Math.min(b.day, days))!;
 }
 
 /** 返回 >= from 的最近一次生日（公历日期） */
@@ -166,13 +204,12 @@ export function validateBirthday(b: Birthday, today: DateStr): string | null {
 
   if (day > 30) return '农历日期最大为三十';
   if (year === null) return null;
-  if (b.isLeapMonth && LunarYear.fromYear(year).getLeapMonth() !== month) {
+  if (b.isLeapMonth && lunarYearTable(year).leapMonth !== month) {
     return `农历${year}年没有闰${LUNAR_MONTH_NAMES[month]}`;
   }
-  const lunarMonth = b.isLeapMonth ? -month : month;
-  if (day > LunarMonth.fromYm(year, lunarMonth)!.getDayCount()) {
+  const solar = lunarToSolar(year, b.isLeapMonth ? -month : month, day);
+  if (!solar)
     return `农历${year}年${b.isLeapMonth ? '闰' : ''}${LUNAR_MONTH_NAMES[month]}只有 29 天`;
-  }
-  if (Lunar.fromYmd(year, lunarMonth, day).getSolar().toYmd() > today) return '生日不能晚于今天';
+  if (solar > today) return '生日不能晚于今天';
   return null;
 }

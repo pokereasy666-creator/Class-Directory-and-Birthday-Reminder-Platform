@@ -145,10 +145,33 @@ describe('formatBirthday', () => {
  * 与"农历转公历 + 候选年取最小值"的实现对比，覆盖大量随机生日和查询日期。
  */
 describe('nextOccurrence 与逐日扫描结果一致', () => {
+  // 参照算法自带的按年缓存，与被测代码的缓存相互独立
+  const leapCache = new Map<number, number>();
+  const daysCache = new Map<string, number>();
+  const leapOf = (y: number) => {
+    if (!leapCache.has(y)) leapCache.set(y, LunarYear.fromYear(y).getLeapMonth());
+    return leapCache.get(y)!;
+  };
+  const daysOf = (y: number, m: number) => {
+    const key = `${y}:${m}`;
+    if (!daysCache.has(key)) daysCache.set(key, LunarMonth.fromYm(y, m)!.getDayCount());
+    return daysCache.get(key)!;
+  };
+
+  const lunarCache = new Map<string, { year: number; month: number; day: number }>();
+  const lunarOf = (date: string) => {
+    if (!lunarCache.has(date)) {
+      const { year, month, day } = parseDate(date);
+      const l = Solar.fromYmd(year, month, day).getLunar();
+      lunarCache.set(date, { year: l.getYear(), month: l.getMonth(), day: l.getDay() });
+    }
+    return lunarCache.get(date)!;
+  };
+
   function bruteForce(b: Birthday, from: string): string {
     for (let i = 0; i <= 400; i++) {
       const date = addDays(from, i);
-      const { year, month, day } = parseDate(date);
+      const { month, day } = parseDate(date);
       if (b.calendar === 'SOLAR') {
         const isFeb29Fallback =
           b.month === 2 &&
@@ -159,13 +182,10 @@ describe('nextOccurrence 与逐日扫描结果一致', () => {
         if ((month === b.month && day === b.day) || isFeb29Fallback) return date;
         continue;
       }
-      const l = Solar.fromYmd(year, month, day).getLunar();
-      const target =
-        b.isLeapMonth && LunarYear.fromYear(l.getYear()).getLeapMonth() === b.month
-          ? -b.month
-          : b.month;
-      const expectedDay = Math.min(b.day, LunarMonth.fromYm(l.getYear(), target)!.getDayCount());
-      if (l.getMonth() === target && l.getDay() === expectedDay) return date;
+      const l = lunarOf(date);
+      const target = b.isLeapMonth && leapOf(l.year) === b.month ? -b.month : b.month;
+      const expectedDay = Math.min(b.day, daysOf(l.year, target));
+      if (l.month === target && l.day === expectedDay) return date;
     }
     throw new Error('400 天内未找到生日');
   }
