@@ -49,7 +49,9 @@
 
 ## 快速开始
 
-环境要求：Node.js 20+（开发使用 22），MySQL 8。
+> **Windows 用户**：安装好 Node.js 和 MySQL 后，双击 `scripts\windows\setup.bat` 即可一键部署，详见 [Windows 部署指南](docs/Windows部署指南.md)（含后台服务、局域网访问、备份恢复、常见问题）。
+
+环境要求：Node.js 20.19+ 或 22.12+（开发使用 22），MySQL 8。
 
 ### 1. 数据库
 
@@ -115,6 +117,10 @@ e2e 测试默认连接 `mysql://classbook:classbook123@127.0.0.1:3306/class_dire
 
 ## 部署
 
+**单机部署（无 Nginx）**：在 `server/.env` 中设置 `WEB_DIST=../web/dist`，后端会同时托管前端页面，构建后只需运行 `node dist/main.js`，访问 `http://服务器地址:3000`。Windows 上由脚本自动完成，见 [Windows 部署指南](docs/Windows部署指南.md)。
+
+**Linux + Nginx**：
+
 1. 后端：`npm ci && npx prisma migrate deploy && npm run build && npm run start:prod`（建议用 pm2 / systemd 守护）。生产环境务必设置随机的 `JWT_SECRET`、修改 `ADMIN_PASSWORD`。
 2. 前端：`npm ci && npm run build`，把 `web/dist` 交给 Nginx 托管，并将 `/api`、`/uploads` 反向代理到后端：
 
@@ -129,6 +135,7 @@ server {
 ```
 
 3. 头像保存在 `server/uploads/`（可用 `UPLOAD_DIR` 修改），需要随数据库一起备份。
+4. 忘记管理员密码：`cd server && npm run reset-password -- admin 新密码`。
 
 ## 环境变量（server/.env）
 
@@ -141,6 +148,7 @@ server {
 | `REMINDER_ADVANCE_DAYS` | 提前几天提醒，`0` 不提前 | `1` |
 | `AUTH_RATE_LIMIT` | 登录 / 注册每 IP 每分钟次数上限 | `10` |
 | `UPLOAD_DIR` | 上传文件目录 | `server/uploads` |
+| `WEB_DIST` | 由后端托管的前端目录（相对 server 目录），留空则不托管 | 空 |
 | `SMTP_HOST` 等 | 邮件提醒，`SMTP_HOST` 为空则不发邮件 | 空 |
 
 ## 文档
@@ -149,3 +157,4 @@ server {
 - [系统设计](docs/系统设计.md)（架构、E-R 图、生日算法、安全设计）
 - [接口文档](docs/接口文档.md)（运行后也可访问 Swagger：`/api/docs`）
 - [测试报告](docs/测试报告.md)
+- [Windows 部署指南](docs/Windows部署指南.md)

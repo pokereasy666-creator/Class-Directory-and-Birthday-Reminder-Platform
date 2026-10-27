@@ -11,3 +11,5 @@ coverage/
 server/uploads/*
 !server/uploads/.gitkeep
 web/tests/output/
+server/logs/
+backups/
