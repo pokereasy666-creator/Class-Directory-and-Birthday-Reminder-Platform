@@ -10,3 +10,4 @@ coverage/
 !.vscode/extensions.json
 server/uploads/*
 !server/uploads/.gitkeep
+web/tests/output/
