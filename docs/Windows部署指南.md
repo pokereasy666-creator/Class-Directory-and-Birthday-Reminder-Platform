@@ -104,7 +104,9 @@ git clone -b claude/happy-bardeen-piffux https://github.com/pokereasy666-creator
 
 - root 密码只在第 4 步使用一次，不会保存到任何文件，也不会出现在命令行参数中；平台运行时使用的是专用账号 `classbook`。
 - 所有配置保存在 `server\.env`，其中包含数据库密码和 JWT 密钥，**不要发给别人或上传到网上**（该文件已在 `.gitignore` 中排除）。
-- 再次运行 `setup.bat` 不会覆盖配置和数据，只会重新安装依赖、执行新的迁移并重新构建，所以更新代码后直接再运行一次即可（见 5.3 节）。
+- **中途失败怎么办**：按窗口中的提示解决问题后，直接重新运行 `setup.bat` 即可，不需要删除任何东西。已生成的配置和数据库会继续使用，不会再要 root 密码；如果上次还没完成初始化，仍会询问是否导入演示数据，并在最后显示管理员账号和初始密码。
+- 部署成功后再次运行 `setup.bat` 不会覆盖配置和数据，只会重新安装依赖、执行新的迁移并重新构建，所以更新代码后直接再运行一次即可（见 5.3 节）。
+- 项目路径超过 120 个字符时，第 1 步会给出提示，建议移到 `D:\class-directory` 这样的短路径。
 
 **高级用法**：在 PowerShell 中可以带参数运行，跳过提问：
 
@@ -132,7 +134,8 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -ChinaMirror -Demo -Port 80
 
 双击 **`scripts\windows\start.bat`**，启动成功后会自动打开浏览器访问 `http://localhost:3000`。
 
-- 窗口需要一直开着，**关闭窗口即停止服务**。
+- 窗口需要一直开着，**关闭窗口或按 Ctrl+C 即停止服务**。
+- 服务进程意外退出时会自动重启，窗口中会显示"服务进程已退出……秒后自动重启"。
 - 第一次运行时 Windows 可能弹出"Windows 安全中心警报：Windows Defender 防火墙已阻止此应用的部分功能"。如果需要让同学在局域网访问，勾选"专用网络"后点"允许访问"；只在本机使用可以点"取消"。
 
 ### 3.2 长期运行：安装为后台服务（推荐）
@@ -156,7 +159,8 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -ChinaMirror -Demo -Port 80
 后台服务的实现方式：使用 Windows 自带的**任务计划程序**，以 SYSTEM 身份运行平台，不需要安装其他工具。
 
 - 开机 30 秒后自动启动（等待 MySQL 先启动），无需登录 Windows；
-- 若进程异常退出（例如开机时数据库还没就绪），任务计划程序按"失败时重新启动"设置每分钟重试；
+- 服务进程异常退出（包括开机时 MySQL 还没启动完成）时，由启动器 `server-launcher.cjs` 自动重启，间隔从 5 秒开始逐次加倍，最长 1 分钟；
+- 选择"停止"或卸载时，启动器被结束，服务进程会在几秒内自行退出，不会继续占用端口；
 - 运行日志写入 `server\logs\server.log`，超过 10MB 自动保留一份旧日志；
 - 在"任务计划程序"（`taskschd.msc`）的"任务计划程序库"中可以看到名为 **ClassDirectory** 的任务。
 
@@ -326,6 +330,12 @@ npm test              # 单元测试，不需要数据库
 **报错 `Failed to fetch the engine file` 或 `prisma` 相关下载失败**
 同上，使用国内镜像（会同时设置 Prisma 引擎镜像）。
 
+**初始化数据时报 `Module '"@prisma/client"' has no exported member 'CalendarType'`（或 `UserStatus`、`UserCreateInput`）**
+这是数据库访问代码（Prisma Client）没有生成成功。早期版本的部署脚本依赖 npm 安装时自动生成，而这一步在 Windows 上可能静默失败（文件被占用等原因）。现在的脚本会在安装依赖后检查并重新生成，失败时会给出具体原因。获取最新代码后直接重新运行 `setup.bat` 即可，已创建的数据库和配置会继续使用。
+
+**"生成 Prisma Client 失败"**
+按提示处理：报 `EPERM` / `EBUSY` / `operation not permitted` 时，暂时关闭杀毒软件的实时防护（或把项目目录加入白名单），并关闭打开了本项目的编辑器；报下载失败时选择使用国内镜像；路径过长时把项目移动到短路径。处理后重新运行 `setup.bat`。
+
 **"无法连接 MySQL"**
 在 `services.msc` 中确认 MySQL80 正在运行；若是停止状态，右键 → 启动，并把启动类型设为"自动"。
 
@@ -354,4 +364,10 @@ root 密码输错，或该账号没有建库、建用户的权限。可以在 My
 
 ## 8. 验证说明
 
-部署脚本中的每个步骤（使用 root 创建数据库和最小权限账号、生成配置文件、迁移、初始化数据、构建、通过启动器运行并由后端托管前端、备份导出与恢复、重置密码）都已在 Linux 环境中用相同的命令逐一验证；PowerShell 脚本做了针对 Windows PowerShell 5.1 的静态检查。但这些脚本**尚未在真实的 Windows 系统上完整运行过**，任务计划程序、防火墙、UAC 提权等 Windows 专有部分无法在 Linux 上验证。首次使用时如遇报错，请保留窗口中的完整输出以便排查。
+- **真实 Windows**：第一版脚本在真实的 Windows 电脑上运行时，在"初始化数据"一步失败（即上文常见问题中的 `has no exported member`），已修复。
+- **PowerShell 实际运行**：修复后的脚本在 Linux 上用 PowerShell 7 实际运行过——`setup`（含中途失败后重跑、部署成功后再次运行）、`start`、`backup`（并验证可恢复）、`reset-password`。
+- **兼容性检查**：用 PSScriptAnalyzer 按 Windows 10 / Windows Server 2016 上 PowerShell 5.1 的语法、命令和 .NET 类型做了兼容性检查，没有发现问题。
+- **后台服务**：用模拟的任务计划程序和防火墙命令跑通了安装、启动、状态、重启、停止、卸载流程。启动器的自动重启和防止孤儿进程也做了实际测试。
+- **尚未在真实 Windows 上验证**：任务计划程序、防火墙规则、UAC 提权本身的行为。
+
+如遇报错，请保留窗口中的完整输出以便排查。

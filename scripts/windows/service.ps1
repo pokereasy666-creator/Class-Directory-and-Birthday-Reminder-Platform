@@ -4,8 +4,8 @@
 
 .DESCRIPTION
   使用 Windows 自带的「任务计划程序」以 SYSTEM 身份运行平台（不需要额外安装 NSSM、pm2 等工具）：
-    - 开机 30 秒后自动启动（等待 MySQL 先启动）
-    - 进程异常退出时每分钟自动重试
+    - 开机 30 秒后自动启动，无需登录 Windows
+    - 服务进程意外退出（包括开机时数据库还没就绪）由启动器 server-launcher.cjs 自动重启
     - 日志写入 server\logs\server.log
   需要管理员权限，非管理员运行时会自动请求提升。不带参数运行时显示菜单。
 
@@ -20,6 +20,9 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+# 提权后的新窗口不是由 .bat 打开的，出错退出前要停一下，否则窗口直接关闭看不到原因
+$script:PauseOnExit = [bool]$Elevated
+trap { Write-UnexpectedError $_; exit 1 }
 
 $FirewallRuleName = 'ClassDirectory'
 
@@ -32,12 +35,15 @@ if (-not (Test-IsAdmin)) {
   $argList += '-Elevated'
   try {
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList
-    Write-Host '已在新的管理员窗口中继续，本窗口可以关闭。'
   } catch {
     Stop-WithError '未获得管理员权限，操作已取消。'
   }
+  Write-Host '已在新的管理员窗口中继续，本窗口可以关闭。'
   exit 0
 }
+
+# 操作失败时抛出异常，由菜单捕获后显示，回到菜单而不是直接退出
+function Fail([string]$Message) { throw $Message }
 
 function Get-AppTask { return Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
 
@@ -52,25 +58,26 @@ function Wait-Port([int]$Port, [bool]$Open, [int]$Seconds) {
 function Install-AppService {
   if (-not (Test-Path -LiteralPath (Join-Path $ServerDir 'dist/main.js')) -or
       -not (Test-Path -LiteralPath (Join-Path $WebDir 'dist/index.html'))) {
-    Stop-WithError '尚未部署，请先运行 setup.bat。'
+    Fail '尚未部署，请先运行 setup.bat。'
   }
   $port = Get-AppPort
   if (-not (Get-AppTask) -and (Test-TcpPort '127.0.0.1' $port)) {
-    Stop-WithError "端口 $port 已被占用，请先关闭 start.bat 窗口或其他占用该端口的程序。"
+    Fail "端口 $port 已被占用，请先关闭 start.bat 窗口或其他占用该端口的程序。"
   }
 
-  $node = (Get-Command node -ErrorAction SilentlyContinue)
-  if (-not $node) { Stop-WithError '未找到 Node.js。' }
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $node) { Fail '未找到 Node.js。' }
   $launcher = Join-Path $PSScriptRoot 'server-launcher.cjs'
 
   $taskAction = New-ScheduledTaskAction -Execute $node.Source -Argument ('"' + $launcher + '"') -WorkingDirectory $ServerDir
   $trigger = New-ScheduledTaskTrigger -AtStartup
   $trigger.Delay = 'PT30S'
+  # 启动器自己负责重启服务进程；这里的失败重试只针对启动器本身无法启动的情况
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
   $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 
-  if (Get-AppTask) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
+  if (Get-AppTask) { Stop-AppService }
   Register-ScheduledTask -TaskName $TaskName -Description '班级通讯录与生日提醒平台' -Action $taskAction `
     -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
   Write-Ok "已注册计划任务 $TaskName（开机自动启动）"
@@ -86,7 +93,7 @@ function Install-AppService {
 }
 
 function Start-AppService {
-  if (-not (Get-AppTask)) { Stop-WithError '后台服务尚未安装，请先选择「安装」。' }
+  if (-not (Get-AppTask)) { Fail '后台服务尚未安装，请先选择「安装」。' }
   $port = Get-AppPort
   if (Test-TcpPort '127.0.0.1' $port) { Write-Ok "服务已在运行：http://localhost:$port"; return }
   Start-ScheduledTask -TaskName $TaskName
@@ -95,7 +102,7 @@ function Start-AppService {
     Write-Ok "启动成功：http://localhost:$port"
     foreach ($ip in Get-LanAddresses) { Write-Ok "局域网访问：http://${ip}:$port" }
   } else {
-    Write-Note '60 秒内未启动成功，以下是最近的日志：'
+    Write-Note '60 秒内未启动成功（启动器会继续自动重试），以下是最近的日志：'
     Show-AppLogs 30
   }
 }
@@ -103,7 +110,28 @@ function Start-AppService {
 function Stop-AppService {
   if (-not (Get-AppTask)) { Write-Note '后台服务尚未安装。'; return }
   Stop-ScheduledTask -TaskName $TaskName
+  # 启动器被结束后，服务进程会在几秒内自行退出
   if (Wait-Port (Get-AppPort) $false 15) { Write-Ok '服务已停止' } else { Write-Note '端口仍被占用，可能有其他程序在使用该端口。' }
+}
+
+function Format-TaskState($State) {
+  switch ([string]$State) {
+    'Running' { return '运行中' }
+    'Ready' { return '已就绪（当前未运行）' }
+    'Disabled' { return '已禁用' }
+    'Queued' { return '排队中' }
+    default { return [string]$State }
+  }
+}
+
+function Format-TaskResult($Result) {
+  switch ([int64]$Result) {
+    0 { return '成功' }
+    267009 { return '正在运行' }
+    267011 { return '尚未运行过' }
+    267014 { return '已被手动停止' }
+    default { return ('0x{0:X}' -f [int64]$Result) }
+  }
 }
 
 function Show-AppStatus {
@@ -111,8 +139,8 @@ function Show-AppStatus {
   $port = Get-AppPort
   if (-not $task) { Write-Note '后台服务：未安装' } else {
     $info = Get-ScheduledTaskInfo -TaskName $TaskName
-    Write-Host "后台服务：已安装（状态 $($task.State)）"
-    Write-Host "上次启动：$($info.LastRunTime)    上次结果：$($info.LastTaskResult)"
+    Write-Host "后台服务：已安装（$(Format-TaskState $task.State)）"
+    Write-Host "上次启动：$($info.LastRunTime)    上次结果：$(Format-TaskResult $info.LastTaskResult)"
   }
   if (Test-TcpPort '127.0.0.1' $port) {
     Write-Ok "端口 $port 正在监听：http://localhost:$port"
@@ -126,14 +154,15 @@ function Show-AppStatus {
 function Show-AppLogs([int]$Lines = 50) {
   $logFile = Join-Path $ServerDir 'logs/server.log'
   if (-not (Test-Path -LiteralPath $logFile)) { Write-Note '暂无日志。'; return }
-  Get-Content -LiteralPath $logFile -Tail $Lines -Encoding UTF8
+  # 直接输出到控制台：放在管道里会被菜单丢弃
+  Get-Content -LiteralPath $logFile -Tail $Lines -Encoding UTF8 | Out-Host
   Write-Host ''
   Write-Host "完整日志：$logFile"
 }
 
 function Uninstall-AppService {
   if (Get-AppTask) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Stop-AppService
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Ok '已删除后台服务（数据库和数据不受影响）'
   } else {
@@ -143,20 +172,28 @@ function Uninstall-AppService {
   if ($rule) { $rule | Remove-NetFirewallRule; Write-Ok '已删除防火墙规则' }
 }
 
+# 执行一个操作；失败时显示原因并返回 $false
 function Invoke-AppAction([string]$Name) {
-  switch ($Name) {
-    'install' { Install-AppService }
-    'start' { Start-AppService }
-    'stop' { Stop-AppService }
-    'restart' { Stop-AppService; Start-AppService }
-    'status' { Show-AppStatus }
-    'logs' { Show-AppLogs 50 }
-    'uninstall' { Uninstall-AppService }
+  try {
+    switch ($Name) {
+      'install' { Install-AppService }
+      'start' { Start-AppService }
+      'stop' { Stop-AppService }
+      'restart' { Stop-AppService; Start-AppService }
+      'status' { Show-AppStatus }
+      'logs' { Show-AppLogs 50 }
+      'uninstall' { Uninstall-AppService }
+    }
+    return $true
+  } catch {
+    Write-Host "[失败] $($_.Exception.Message)" -ForegroundColor Red
+    return $false
   }
 }
 
+$exitCode = 0
 if ($Action) {
-  Invoke-AppAction $Action
+  if (-not (Invoke-AppAction $Action)) { $exitCode = 1 }
 } else {
   $menu = [ordered]@{
     '1' = @('install', '安装并启动后台服务（开机自动运行）')
@@ -174,8 +211,9 @@ if ($Action) {
     Write-Host '  0. 退出'
     $choice = (Read-Host '请输入序号').Trim()
     if ($choice -eq '0' -or $choice -eq '') { break }
-    if ($menu.Contains($choice)) { Invoke-AppAction $menu[$choice][0] } else { Write-Note '无效的序号' }
+    if ($menu.Contains($choice)) { $null = Invoke-AppAction $menu[$choice][0] } else { Write-Note '无效的序号' }
   }
 }
 
 if ($Elevated) { Wait-ForKey }
+exit $exitCode

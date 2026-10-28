@@ -13,3 +13,4 @@ server/uploads/*
 web/tests/output/
 server/logs/
 backups/
+server/.setup-complete

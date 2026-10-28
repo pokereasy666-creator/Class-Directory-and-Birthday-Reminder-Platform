@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   首次运行：安装依赖 → 创建数据库和专用账号 → 生成 server\.env → 建表 → 初始化数据 → 构建前后端。
-  再次运行（如更新代码后）：保留现有 .env 和数据，只重新安装依赖、执行新的数据库迁移并重新构建。
+  中途失败：解决问题后直接重新运行即可，已生成的配置和数据库会继续使用。
+  更新代码后：再次运行，保留现有配置和数据，只重新安装依赖、执行新的数据库迁移并重新构建。
 
   通常直接双击 scripts\windows\setup.bat 即可，所需信息会逐项询问。
 
@@ -31,16 +32,26 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+trap { Write-UnexpectedError $_; exit 1 }
 
 Write-Host '班级通讯录与生日提醒平台 - 部署脚本' -ForegroundColor White
 Write-Host "项目目录：$RepoRoot"
 
-$firstTime = $Reconfigure -or -not (Test-Path -LiteralPath $EnvFile)
-if (-not $firstTime) { $Port = Get-AppPort }
+# 是否需要创建数据库、生成配置（首次运行或 -Reconfigure）
+$needConfig = $Reconfigure -or -not (Test-Path -LiteralPath $EnvFile)
+# 之前是否完整部署成功过；中途失败后重新运行时，仍按首次部署询问演示数据、显示管理员账号。
+# 旧版本脚本不写标记文件，已有构建产物也视为部署成功过
+$hasBuild = (Test-Path -LiteralPath (Join-Path $ServerDir 'dist/main.js')) -and (Test-Path -LiteralPath (Join-Path $WebDir 'dist/index.html'))
+$completedBefore = -not $needConfig -and ((Test-Path -LiteralPath $SetupMarker) -or $hasBuild)
+if (-not $needConfig) { $Port = Get-AppPort }
 
 # ---------------------------------------------------------------- 1. 环境
 Write-Step '1/7 检查运行环境'
 Assert-Node
+if ($RepoRoot.Length -gt 120) {
+  Write-Note ("项目路径较长（$($RepoRoot.Length) 个字符）。Windows 对超过 260 个字符的路径支持不完整，" +
+    '可能导致依赖安装或生成失败；如遇问题，请把项目移动到 D:\class-directory 这样的短路径。')
+}
 if (Test-TcpPort '127.0.0.1' $Port) {
   Stop-WithError ("端口 $Port 已被占用。如果平台的后台服务或 start.bat 正在运行，请先停止" +
     '（双击 service.bat 选择"停止"，或关闭 start.bat 的窗口），部署完成后再启动。')
@@ -63,15 +74,10 @@ if ($useMirror) {
 
 # ---------------------------------------------------------------- 2. MySQL
 Write-Step '2/7 检查 MySQL'
-if (-not $firstTime) {
-  $envMap = Read-DotEnv $EnvFile
-  try {
-    $dbUri = [Uri]$envMap['DATABASE_URL']
-    $DbHost = $dbUri.Host
-    $DbPort = $dbUri.Port
-  } catch {
-    Stop-WithError 'server\.env 中的 DATABASE_URL 无法解析，请检查，或使用 -Reconfigure 参数重新生成。'
-  }
+if (-not $needConfig) {
+  $db = Get-DatabaseConfig
+  $DbHost = $db.Host
+  $DbPort = $db.Port
 }
 if (-not (Test-TcpPort $DbHost $DbPort)) {
   Stop-WithError ("无法连接 MySQL（${DbHost}:${DbPort}）。请确认已安装 MySQL 8 且服务已启动：" +
@@ -81,14 +87,17 @@ Write-Ok "MySQL ${DbHost}:${DbPort} 可以连接"
 
 # ---------------------------------------------------------------- 3. 依赖
 Write-Step '3/7 安装依赖（首次约需 2~5 分钟）'
-Invoke-Native -FilePath $Npm -ArgumentList @('ci', '--no-audit', '--no-fund') -WorkingDirectory $ServerDir -ErrorMessage '安装后端依赖失败，请检查网络'
-Invoke-Native -FilePath $Npm -ArgumentList @('ci', '--no-audit', '--no-fund') -WorkingDirectory $WebDir -ErrorMessage '安装前端依赖失败，请检查网络'
-$prismaCli = Join-Path $ServerDir 'node_modules/prisma/build/index.js'
+$npmCi = @('ci', '--no-audit', '--no-fund', '--loglevel=error')
+$installHint = '。若提示 EPERM / EBUSY（文件被占用），请关闭打开了本项目的编辑器、暂停杀毒软件实时防护后重试；若是网络错误，请选择使用国内镜像'
+# server 的 postinstall 会执行 prisma generate，生成失败时 npm ci 会直接报错
+Invoke-Native -FilePath $Npm -ArgumentList $npmCi -WorkingDirectory $ServerDir -ErrorMessage "安装后端依赖失败$installHint"
+Assert-PrismaClient
+Invoke-Native -FilePath $Npm -ArgumentList $npmCi -WorkingDirectory $WebDir -ErrorMessage "安装前端依赖失败$installHint"
 Write-Ok '依赖安装完成'
 
 # ---------------------------------------------------------------- 4. 数据库与 .env
 $generatedAdminPassword = $null
-if ($firstTime) {
+if ($needConfig) {
   Write-Step '4/7 创建数据库和专用账号'
   if (-not $DbRootPassword) {
     $DbRootPassword = ConvertTo-PlainText (Read-Host "请输入 MySQL $DbRootUser 用户的密码（输入时不显示）" -AsSecureString)
@@ -111,7 +120,7 @@ FLUSH PRIVILEGES;
   $env:CD_SETUP_ROOT_URL = 'mysql://' + [Uri]::EscapeDataString($DbRootUser) + ':' + [Uri]::EscapeDataString($DbRootPassword) + "@${DbHost}:${DbPort}/"
   Push-Location $ServerDir
   try {
-    $sql | & node $prismaCli db execute --stdin --schema $tempSchema
+    $sql | & node $PrismaCli db execute --stdin --schema $tempSchema
     $code = $LASTEXITCODE
   } finally {
     Pop-Location
@@ -172,6 +181,7 @@ SMTP_PASS=
 SMTP_FROM=
 "@
   Write-Utf8File $EnvFile $envContent
+  Remove-Item -LiteralPath $SetupMarker -Force -ErrorAction SilentlyContinue
   Write-Ok '已生成 server\.env'
 } else {
   Write-Step '4/7 使用现有配置 server\.env'
@@ -186,11 +196,11 @@ SMTP_FROM=
 
 # ---------------------------------------------------------------- 5. 建表
 Write-Step '5/7 执行数据库迁移'
-Invoke-Native -FilePath 'node' -ArgumentList @($prismaCli, 'migrate', 'deploy') -WorkingDirectory $ServerDir -ErrorMessage '数据库迁移失败'
+Invoke-Native -FilePath 'node' -ArgumentList @($PrismaCli, 'migrate', 'deploy') -WorkingDirectory $ServerDir -ErrorMessage '数据库迁移失败'
 
 # ---------------------------------------------------------------- 6. 初始数据
 Write-Step '6/7 初始化数据'
-if ($firstTime -and -not $PSBoundParameters.ContainsKey('Demo')) {
+if (-not $completedBefore -and -not $PSBoundParameters.ContainsKey('Demo')) {
   $Demo = Read-YesNo '是否导入演示数据（13 名示例学生、公告，适合答辩演示；正式使用请选否）？' $false
 }
 if ($Demo) { $seedScript = 'seed:demo' } else { $seedScript = 'seed' }
@@ -201,17 +211,21 @@ Write-Step '7/7 构建前端与后端'
 Invoke-Native -FilePath $Npm -ArgumentList @('run', 'build') -WorkingDirectory $WebDir -ErrorMessage '前端构建失败'
 Invoke-Native -FilePath $Npm -ArgumentList @('run', 'build') -WorkingDirectory $ServerDir -ErrorMessage '后端构建失败'
 
+Write-Utf8File $SetupMarker ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "`n")
+
 # ---------------------------------------------------------------- 完成
 Write-Host ''
 Write-Host '部署完成！' -ForegroundColor Green
 Write-Host "  本机访问：      http://localhost:$Port"
 foreach ($ip in Get-LanAddresses) { Write-Host "  局域网访问：    http://${ip}:$Port（需在 service.bat 中放行防火墙）" }
-if ($firstTime) {
+if (-not $completedBefore) {
   Write-Host '  管理员账号：    admin'
   if ($generatedAdminPassword) {
     Write-Host "  管理员密码：    $generatedAdminPassword  （随机生成，请记下；登录后可在「修改密码」中更改）" -ForegroundColor Yellow
   } else {
-    Write-Host '  管理员密码：    你刚才设置的密码'
+    # 中途失败后重新运行时，密码是上次运行时设置的，从 .env 中读出来提示
+    $initialPassword = (Read-DotEnv $EnvFile)['ADMIN_PASSWORD']
+    Write-Host "  管理员初始密码：$initialPassword  （首次部署时设置，保存在 server\.env；登录后请修改）" -ForegroundColor Yellow
   }
   if ($Demo) { Write-Host '  演示学生账号：  2022010101 ~ 2022010111，密码 Student123' }
 }

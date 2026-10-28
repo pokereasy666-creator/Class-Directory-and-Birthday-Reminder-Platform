@@ -16,17 +16,10 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+trap { Write-UnexpectedError $_; exit 1 }
 
 if (-not $OutputDir) { $OutputDir = Join-Path $RepoRoot 'backups' }
-$envMap = Read-DotEnv $EnvFile
-if (-not $envMap.ContainsKey('DATABASE_URL')) { Stop-WithError '未找到 server\.env 或其中没有 DATABASE_URL，请先运行 setup.bat。' }
-
-$uri = [Uri]$envMap['DATABASE_URL']
-$userInfo = $uri.UserInfo.Split(':', 2)
-$dbUser = [Uri]::UnescapeDataString($userInfo[0])
-$dbPassword = ''
-if ($userInfo.Length -gt 1) { $dbPassword = [Uri]::UnescapeDataString($userInfo[1]) }
-$dbName = $uri.AbsolutePath.Trim('/')
+$db = Get-DatabaseConfig
 
 # 查找 mysqldump：先找 PATH，再找 MySQL 默认安装目录
 $mysqldump = $null
@@ -55,12 +48,12 @@ try {
   # 账号密码写入临时配置文件传给 mysqldump，不出现在命令行参数中
   $escape = { param($s) $s.Replace('\', '\\').Replace('"', '\"') }
   $optionFile = Join-Path $workDir 'client.cnf'
-  Write-Utf8File $optionFile ("[client]`nuser=`"" + (& $escape $dbUser) + "`"`npassword=`"" + (& $escape $dbPassword) +
-    "`"`nhost=`"" + $uri.Host + "`"`nport=" + $uri.Port + "`n")
-  $sqlFile = Join-Path $workDir "$dbName.sql"
+  Write-Utf8File $optionFile ("[client]`nuser=`"" + (& $escape $db.User) + "`"`npassword=`"" + (& $escape $db.Password) +
+    "`"`nhost=`"" + $db.Host + "`"`nport=" + $db.Port + "`n")
+  $sqlFile = Join-Path $workDir ($db.Database + '.sql')
   # --no-tablespaces：普通账号没有导出表空间所需的 PROCESS 权限
   & $mysqldump "--defaults-extra-file=$optionFile" '--single-transaction' '--no-tablespaces' '--set-gtid-purged=OFF' `
-    '--default-character-set=utf8mb4' "--result-file=$sqlFile" $dbName
+    '--default-character-set=utf8mb4' "--result-file=$sqlFile" $db.Database
   $code = $LASTEXITCODE
   Remove-Item -LiteralPath $optionFile -Force # 含密码的临时文件用完立即删除
   if ($code -ne 0) { Stop-WithError "mysqldump 执行失败（退出码 $code）" }

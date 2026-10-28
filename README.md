@@ -73,7 +73,7 @@ GRANT ALL PRIVILEGES ON *.* TO 'classbook'@'%';  -- prisma migrate dev 需要创
 
 ```bash
 cd server
-npm install
+npm install                   # 安装依赖，完成后会自动生成 Prisma Client
 cp .env.example .env          # 按需修改数据库连接、JWT_SECRET
 npx prisma migrate deploy     # 建表
 npm run seed:demo             # 管理员 + 默认小组 + 演示数据（只要管理员用 npm run seed）
